@@ -15,7 +15,13 @@ namespace lob {
 // remainder of a market order is discarded.
 class MatchingEngine {
 public:
-    // Submit an order. Returns the trades it generated (possibly empty).
+    // Submit an order, appending any resulting trades to `out`.
+    //
+    // Hot path: the caller owns the buffer and can reuse it across orders,
+    // so a steady order flow does no per-order heap allocation.
+    void submit(Order order, std::vector<Trade>& out);
+
+    // Convenience overload for callers that don't care about allocation.
     std::vector<Trade> submit(Order order);
 
     // Cancel a resting order by id.

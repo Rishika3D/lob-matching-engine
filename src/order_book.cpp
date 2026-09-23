@@ -1,14 +1,16 @@
 #include "lob/order_book.hpp"
 
+#include <iterator>
+
 namespace lob {
 
 void OrderBook::add(const Order& order) {
-    if (order.side == Side::Buy) {
-        bids_[order.price].push_back(order);
-    } else {
-        asks_[order.price].push_back(order);
-    }
-    index_[order.id] = Locator{order.side, order.price};
+    auto& queue = (order.side == Side::Buy) ? bids_[order.price]
+                                            : asks_[order.price];
+    queue.push_back(order);
+    // std::prev(end()) is the just-inserted order; list iterators stay valid
+    // as the level grows and shrinks around it.
+    index_[order.id] = Locator{order.side, order.price, std::prev(queue.end())};
 }
 
 bool OrderBook::cancel(OrderId id) {
@@ -24,16 +26,11 @@ bool OrderBook::cancel(OrderId id) {
             return false;
         }
         auto& queue = level_it->second;
-        for (auto order_it = queue.begin(); order_it != queue.end(); ++order_it) {
-            if (order_it->id == id) {
-                queue.erase(order_it);
-                if (queue.empty()) {
-                    levels.erase(level_it);
-                }
-                return true;
-            }
+        queue.erase(loc.pos);  // O(1): no scan of the level
+        if (queue.empty()) {
+            levels.erase(level_it);
         }
-        return false;
+        return true;
     };
 
     const bool removed =

@@ -1,7 +1,7 @@
 #pragma once
 
-#include <deque>
 #include <functional>
+#include <list>
 #include <map>
 #include <optional>
 #include <unordered_map>
@@ -12,8 +12,13 @@ namespace lob {
 
 // One side of the book: price level -> FIFO queue of resting orders.
 // Bids are sorted descending (best bid first), asks ascending (best ask first).
-using BidLevels = std::map<Price, std::deque<Order>, std::greater<Price>>;
-using AskLevels = std::map<Price, std::deque<Order>>;
+//
+// Levels hold a std::list rather than a deque so the order index can store a
+// stable iterator to each resting order: list iterators survive insertions and
+// unrelated erasures, which makes cancel O(1) instead of a scan of the level.
+using OrderQueue = std::list<Order>;
+using BidLevels = std::map<Price, OrderQueue, std::greater<Price>>;
+using AskLevels = std::map<Price, OrderQueue>;
 
 class OrderBook {
 public:
@@ -39,10 +44,12 @@ private:
     BidLevels bids_;
     AskLevels asks_;
 
-    // order id -> (side, price) so cancels don't have to scan the book.
+    // order id -> exactly where the order sits, so cancel is O(1): the price
+    // level is a map lookup and the order itself is a stored list iterator.
     struct Locator {
         Side side;
         Price price;
+        OrderQueue::iterator pos;
     };
     std::unordered_map<OrderId, Locator> index_;
 };

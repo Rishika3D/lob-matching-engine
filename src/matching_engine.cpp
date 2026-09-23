@@ -48,20 +48,22 @@ void MatchingEngine::match_against(Order& incoming, Levels& levels,
     }
 }
 
-std::vector<Trade> MatchingEngine::submit(Order order) {
-    std::vector<Trade> trades;
-
+void MatchingEngine::submit(Order order, std::vector<Trade>& out) {
     if (order.side == Side::Buy) {
-        match_against(order, book_.asks(), trades);
+        match_against(order, book_.asks(), out);
     } else {
-        match_against(order, book_.bids(), trades);
+        match_against(order, book_.bids(), out);
     }
 
     // Unfilled limit remainder rests in the book; market remainder is dropped.
     if (order.quantity > 0 && order.type == OrderType::Limit) {
         book_.add(order);
     }
+}
 
+std::vector<Trade> MatchingEngine::submit(Order order) {
+    std::vector<Trade> trades;
+    submit(order, trades);
     return trades;
 }
 

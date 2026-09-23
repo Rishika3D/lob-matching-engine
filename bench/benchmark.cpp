@@ -60,6 +60,9 @@ int main() {
     std::vector<double> latencies;
     latencies.reserve(kOrders);
 
+    std::vector<Trade> trade_buf;  // reused across every submit
+    trade_buf.reserve(64);
+
     auto step = [&](bool record) {
         const int action = action_dist(rng);
 
@@ -94,16 +97,17 @@ int main() {
             resting.push_back(order.id);
         }
 
+        trade_buf.clear();  // reuse the buffer: no per-order allocation
         const auto t0 = Clock::now();
-        const auto trades = engine.submit(order);
+        engine.submit(order, trade_buf);
         const auto t1 = Clock::now();
         if (record) {
             latencies.push_back(
                 std::chrono::duration<double, std::nano>(t1 - t0).count());
         }
 
-        total_trades += trades.size();
-        for (const auto& t : trades) {
+        total_trades += trade_buf.size();
+        for (const auto& t : trade_buf) {
             total_filled_qty += t.quantity;
         }
     };
