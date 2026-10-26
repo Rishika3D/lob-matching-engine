@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <iostream>
 #include <random>
+#include <string_view>
 #include <vector>
 
 #include "lob/matching_engine.hpp"
@@ -37,7 +38,11 @@ Stats percentiles(std::vector<double>& samples) {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    // --reserve pre-sizes the engine's id index for the whole run. Off by
+    // default so numbers stay comparable with earlier runs of this benchmark.
+    const bool reserve = argc > 1 && std::string_view(argv[1]) == "--reserve";
+
     constexpr int kWarmup = 100'000;
     constexpr int kOrders = 1'000'000;
     constexpr Price kMidPrice = 10000;   // $100.00 in ticks
@@ -48,7 +53,7 @@ int main() {
     std::uniform_int_distribution<int> qty_dist(1, 500);
     std::uniform_int_distribution<int> action_dist(0, 99);
 
-    MatchingEngine engine;
+    MatchingEngine engine(reserve ? kWarmup + kOrders : 0);
     OrderId next_id = 1;
     std::vector<OrderId> resting;  // ids we may later cancel
     resting.reserve(kOrders);
@@ -136,7 +141,8 @@ int main() {
 
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "=== LOB Matching Engine Benchmark ===\n";
-    std::cout << "operations         : " << kOrders << " (90% new orders, 10% cancels)\n";
+    std::cout << "operations         : " << kOrders << " (80% limit, 10% market, 10% cancel)\n";
+    std::cout << "index pre-reserved : " << (reserve ? "yes" : "no") << "\n";
     std::cout << "wall time          : " << wall_sec << " s\n";
     std::cout << "throughput         : " << (kOrders / wall_sec / 1e6)
               << " M ops/sec\n";

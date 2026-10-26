@@ -41,6 +41,10 @@ bool OrderBook::cancel(OrderId id) {
     return removed;
 }
 
+bool OrderBook::contains(OrderId id) const {
+    return index_.find(id) != index_.end();
+}
+
 std::optional<Price> OrderBook::best_bid() const {
     if (bids_.empty()) {
         return std::nullopt;

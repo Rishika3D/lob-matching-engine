@@ -48,7 +48,15 @@ void MatchingEngine::match_against(Order& incoming, Levels& levels,
     }
 }
 
-void MatchingEngine::submit(Order order, std::vector<Trade>& out) {
+bool MatchingEngine::submit(Order order, std::vector<Trade>& out) {
+    // Reject before matching: a rejected order must neither trade nor rest.
+    if (order.quantity == 0) {
+        return false;
+    }
+    if (book_.contains(order.id)) {
+        return false;
+    }
+
     if (order.side == Side::Buy) {
         match_against(order, book_.asks(), out);
     } else {
@@ -59,6 +67,8 @@ void MatchingEngine::submit(Order order, std::vector<Trade>& out) {
     if (order.quantity > 0 && order.type == OrderType::Limit) {
         book_.add(order);
     }
+
+    return true;
 }
 
 std::vector<Trade> MatchingEngine::submit(Order order) {
