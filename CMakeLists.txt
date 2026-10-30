@@ -32,6 +32,8 @@ endif()
 add_library(lob
     src/order_book.cpp
     src/matching_engine.cpp
+    src/event_io.cpp
+    src/backtest.cpp
 )
 target_include_directories(lob PUBLIC include)
 target_link_libraries(lob PRIVATE lob_warnings)
@@ -39,6 +41,9 @@ target_link_libraries(lob PRIVATE lob_warnings)
 if(LOB_BUILD_DEMO)
     add_executable(lob_demo src/main.cpp)
     target_link_libraries(lob_demo PRIVATE lob lob_warnings)
+
+    add_executable(lob_backtest src/backtest_demo.cpp)
+    target_link_libraries(lob_backtest PRIVATE lob lob_warnings)
 endif()
 
 if(LOB_BUILD_BENCH)
@@ -63,6 +68,7 @@ if(LOB_BUILD_TESTS)
         tests/test_validation.cpp
         tests/test_integrity.cpp
         tests/test_order_types.cpp
+        tests/test_backtest.cpp
         tests/test_differential.cpp
     )
     target_link_libraries(lob_tests PRIVATE lob lob_warnings GTest::gtest_main)

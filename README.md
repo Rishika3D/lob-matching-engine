@@ -11,12 +11,14 @@ backtester.
 - **Limit and market orders** — an unfilled limit remainder rests; an unfilled market remainder is discarded
 - **Price improvement** — trades execute at the *resting* order's price, not the aggressor's
 - **Partial fills keep their place** — a partly filled resting order stays at the front of its queue
+- **Time in force** — good-til-cancel, immediate-or-cancel (IOC) and fill-or-kill (FOK)
 - **Cancel by order id**, O(1) in the size of the queue
+- **Modify (cancel/replace)** with exchange-style priority: shrinking an order in place keeps its queue position; changing the price or growing it sends it to the back, and it trades at once if the new price crosses
 - **Input validation** — zero-quantity orders and ids that are already live are rejected before they can touch the book
+- **A replay backtester** on top of the engine (see below)
 
-**Not implemented:** order modification (cancel/replace), IOC/FOK/stop orders,
-self-trade prevention, timestamps/sequence numbers, market-data ingestion,
-multi-threading, persistence. There is no backtester layer yet.
+**Not implemented:** stop orders, self-trade prevention, timestamps/sequence
+numbers, binary-feed parsing (ITCH), multi-threading, persistence.
 
 ## Design
 
@@ -30,7 +32,9 @@ multi-threading, persistence. There is no backtester layer yet.
 
 Source: [`order.hpp`](include/lob/order.hpp) (types),
 [`order_book.hpp`](include/lob/order_book.hpp) (storage + index),
-[`matching_engine.hpp`](include/lob/matching_engine.hpp) (matching policy).
+[`matching_engine.hpp`](include/lob/matching_engine.hpp) (matching policy),
+[`backtest.hpp`](include/lob/backtest.hpp) and
+[`event_io.hpp`](include/lob/event_io.hpp) (the backtester and its CSV loader).
 
 ### Complexity
 
@@ -43,6 +47,9 @@ L = price levels (about 40 in the benchmark), F = fills, K = levels consumed.
 | Rest a limit order | O(log L) + 2 heap allocations (queue node, index node) |
 | Match | O(F + K·log L) |
 | Cancel | O(log L) level lookup + O(1) unlink |
+| Modify, quantity down at the same price | O(1) |
+| Modify, price change or quantity up | cancel + submit |
+| Fill-or-kill feasibility check | O(orders examined), stops as soon as enough quantity is seen; paid only by FOK orders |
 
 ## API notes
 
@@ -63,6 +70,22 @@ rejected, in which case `out` and the book are untouched.
 that order's trades. It cannot tell you whether the order was rejected — a
 rejection and an accepted order with no trades both return an empty vector. Use
 the buffer overload when that distinction matters.
+
+**Time in force** (`Order::tif`) decides what happens to the part that does not
+trade immediately: `GoodTilCancel` rests (limit orders only),
+`ImmediateOrCancel` discards it, `FillOrKill` trades the whole quantity or does
+nothing at all. Market orders never rest. A `true` return means the order was
+processed according to its terms — a killed fill-or-kill order returns `true`
+with no trades.
+
+```cpp
+engine.submit({.id = 7, .side = Side::Buy, .type = OrderType::Limit,
+               .tif = TimeInForce::FillOrKill, .price = 10002, .quantity = 500}, trades);
+```
+
+**`modify(id, new_price, new_quantity, out)`** — `new_quantity` is the quantity
+you want *left*, not a delta. Returns `false` (changing nothing) if the order is
+not resting or `new_quantity` is zero.
 
 **Rejected:** `quantity == 0`, and any `id` that is currently resting in the
 book. An id becomes reusable once its order is filled or cancelled. Market
@@ -85,6 +108,8 @@ ctest --test-dir build --output-on-failure
 ./build/lob_demo          # worked example
 ./build/lob_bench         # benchmark
 ./build/lob_bench --reserve
+./build/lob_backtest      # backtest demo on a synthetic feed
+./build/lob_backtest events.csv
 ```
 
 Requires CMake 3.20+ and a C++20 compiler. GoogleTest is fetched automatically
@@ -93,7 +118,7 @@ at configure time. Options: `-DLOB_BUILD_TESTS=OFF`, `-DLOB_BUILD_BENCH=OFF`,
 
 ## Testing
 
-54 GoogleTest cases in [`tests/`](tests/):
+110 GoogleTest cases in [`tests/`](tests/):
 
 - **Behaviour** — resting, price-time priority, partial and full fills, price
   improvement, multi-level walks on both sides, market orders, all the cancel
@@ -101,19 +126,31 @@ at configure time. Options: `-DLOB_BUILD_TESTS=OFF`, `-DLOB_BUILD_BENCH=OFF`,
 - **Validation** — duplicate ids (same level, other level, other side, after
   fill, after cancel, market orders) and zero quantity; each also checks that a
   rejection leaves the book, the index and the caller's buffer untouched
+- **Order types** — IOC, FOK (including one-share-short and
+  liquidity-beyond-the-limit boundaries) and modify (priority kept or lost,
+  crossing replacements, the "quantity means what is left" rule)
+- **Backtester** — CSV loading (every action, every kind of bad input, line
+  numbers in errors), queue position, fills as resting and as aggressor, exact
+  P&L, mark-to-mid, callback ordering, non-re-entrant fills, id-range safety
 - **Integrity** — copying fails to compile, moving keeps the index valid, the
   capacity hint changes nothing, and a 20,000-step churn test checks that the
   index and the book never disagree
 - **Differential** — [`test_differential.cpp`](tests/test_differential.cpp)
-  runs 100 seeded sessions × 1,000 random operations against a deliberately
-  naive reference model (flat vector, linear search) and requires identical
-  accept/reject results, trades and book contents after every step
+  runs 100 seeded sessions × 1,000 random operations (new orders in all three
+  time-in-force modes, cancels and modifies) against a deliberately naive
+  reference model (flat vector, linear search, its own implementation of FOK and
+  modify) and requires identical accept/reject results, trades and book contents
+  after every step
 
-The tests were mutation-checked: 13 deliberate engine bugs (trade at the wrong
-price, LIFO instead of FIFO, `>` instead of `>=`, dropped guards, stale index
-entries, and others) were each applied in turn, and **every one was caught**.
-One of them (an empty level left in the book) makes the engine loop forever, so
-it surfaces as a hang rather than a failed assertion. The suite also runs
+The tests were mutation-checked: **34 deliberate bugs** were each applied in
+turn — engine (trade at the wrong price, LIFO instead of FIFO, `>` instead of
+`>=`, dropped guards, stale index entries), order types (FOK ignoring the limit
+price, an off-by-one, IOC remainders resting, modify keeping or losing priority
+wrongly), and the backtester (flipped P&L signs, dropped fills, wrong mark,
+state leaking between runs, a CSV loader that accepts trailing junk) — and
+**every one was caught**. One of them (an empty level left in the book) makes
+the engine loop forever, so it surfaces as a hang rather than a failed
+assertion; one is a copy-safety regression that fails to compile. The suite also runs
 clean under AddressSanitizer and UBSan, and the build has no warnings under
 `-Wall -Wextra -Wpedantic -Wshadow`.
 
@@ -190,12 +227,67 @@ Pre-sizing the index confirms it:
 
 Pass an expected order count to the constructor if tail latency matters.
 
+### Cost of the newer features
+
+Adding time-in-force and modify did not slow the engine: against the previously
+published version, 10 interleaved runs of this benchmark gave a median of
+3.93 M ops/s versus 3.96 M ops/s (ratio 0.99, inside the run-to-run noise) with
+identical trade counts. `Order` is still 32 bytes (checked by a `static_assert`).
+
 ### Memory
 
 Resting an order costs two heap allocations (a queue node and an index node);
 there is no pooling or arena. `sizeof(Order)` is 32 bytes. The reusable trade
 buffer removes the per-call result vector only — it does not make the engine
 allocation-free.
+
+## Backtester
+
+`Backtester` replays historical order flow through the real `MatchingEngine`
+with a strategy's own orders sharing the book. Because strategy orders go
+through the same matching logic, **queue position, partial fills and time
+priority come from the engine itself** — a strategy order posted behind 50
+shares only fills once 50 shares have traded ahead of it.
+
+```cpp
+struct MyStrategy : lob::Strategy {
+    void on_event(const lob::MarketEvent& ev, lob::Context& ctx) override {
+        if (auto bid = ctx.book().best_bid()) ctx.submit(lob::Side::Buy, *bid, 10);
+    }
+    void on_fill(const lob::Fill& f, lob::Context& ctx) override { /* ... */ }
+};
+
+auto parsed = lob::parse_events(csv_stream);          // see event_io.hpp for the format
+lob::Backtester bt;
+lob::BacktestResult r = bt.run(parsed.events, my_strategy);
+// r.fills, r.position, r.cash, r.mark, r.pnl, and counters for rejects/misses
+```
+
+- **Input:** CSV (`timestamp,action,id,side,type,tif,price,quantity`; actions
+  `new`, `cancel`, `modify`). Bad input is reported with its line number, and
+  nothing partial is returned.
+- **Context** gives a strategy the live book, its position, `submit`,
+  `submit_market`, `cancel`, `modify` and `queue_ahead(id)`.
+- **Callbacks:** `on_fill` for fills an event caused arrives before that
+  event's `on_event`; fills caused by the strategy's own actions are delivered
+  after the current callback returns, never re-entrantly.
+- **Accounting:** position and cash are signed integers in ticks × shares; P&L
+  is marked to the mid (or the last trade if one side of the book is empty).
+- **Ids:** strategy order ids start at 2⁶², and historical ids at or above that
+  are refused up front, so the two can never collide.
+
+`lob_backtest` runs a toy quote-at-the-touch strategy on a synthetic random-walk
+feed (about 6 M events/s in one run on the M2; not benchmarked rigorously). **Its
+P&L means nothing as a trading result** — the feed is random and the strategy
+is an example, there to show the pieces working together.
+
+**What this model does not do.** Historical orders are replayed exactly as they
+happened, so a strategy that moves the market does not change how other
+participants would have reacted (no market-impact or reaction model), and a
+historical cancel that targets an order the strategy's presence caused to trade
+is counted in `historical_cancel_misses` rather than guessed at. There is no
+latency model, no fees or rebates, and no position or risk limits beyond what a
+strategy imposes on itself.
 
 ## Known limitations
 
@@ -213,8 +305,10 @@ allocation-free.
 ## Layout
 
 ```
-include/lob/   order.hpp  order_book.hpp  matching_engine.hpp
-src/           order_book.cpp  matching_engine.cpp  main.cpp
+include/lob/   order.hpp  order_book.hpp  matching_engine.hpp  event_io.hpp  backtest.hpp
+src/           order_book.cpp  matching_engine.cpp  event_io.cpp  backtest.cpp
+               main.cpp  backtest_demo.cpp
 bench/         benchmark.cpp
-tests/         test_matching  test_validation  test_integrity  test_differential
+tests/         test_matching  test_validation  test_order_types  test_integrity
+               test_differential  test_backtest
 ```
