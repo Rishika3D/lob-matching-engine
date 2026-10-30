@@ -52,6 +52,18 @@ public:
     // An id becomes reusable once its order is filled or cancelled.
     bool contains(OrderId id) const;
 
+    // The resting order with this id, or nullptr. The pointer is valid until
+    // that order is filled, cancelled or the book is modified in a way that
+    // removes it.
+    const Order* find(OrderId id) const;
+
+    // Set a resting order's remaining quantity in place, WITHOUT moving it in
+    // its queue (it keeps its time priority). The caller guarantees the new
+    // quantity is non-zero and not larger than the current one -- growing an
+    // order must forfeit priority, which means cancel and re-add instead.
+    // Returns false if no such order is resting.
+    bool reduce_quantity(OrderId id, Quantity new_quantity);
+
     std::optional<Price> best_bid() const;
     std::optional<Price> best_ask() const;
 

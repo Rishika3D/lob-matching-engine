@@ -96,7 +96,7 @@ TEST(DuplicateId, MarketOrderMayNotReuseALiveId) {
     out.clear();
     EXPECT_FALSE(e.submit(market(7, Side::Buy, 10), out));
     EXPECT_TRUE(out.empty()) << "a rejected market order must not trade";
-    EXPECT_EQ(level(e, Side::Sell, 100).front().quantity, 50u);
+    EXPECT_EQ(front_quantity(e, Side::Sell, 100), 50u);
 }
 
 TEST(DuplicateId, RejectedCrossingOrderDoesNotTrade) {

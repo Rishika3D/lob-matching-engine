@@ -62,6 +62,7 @@ if(LOB_BUILD_TESTS)
         tests/test_matching.cpp
         tests/test_validation.cpp
         tests/test_integrity.cpp
+        tests/test_order_types.cpp
         tests/test_differential.cpp
     )
     target_link_libraries(lob_tests PRIVATE lob lob_warnings GTest::gtest_main)

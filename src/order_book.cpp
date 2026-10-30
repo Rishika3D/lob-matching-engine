@@ -45,6 +45,20 @@ bool OrderBook::contains(OrderId id) const {
     return index_.find(id) != index_.end();
 }
 
+const Order* OrderBook::find(OrderId id) const {
+    auto it = index_.find(id);
+    return it == index_.end() ? nullptr : &*it->second.pos;
+}
+
+bool OrderBook::reduce_quantity(OrderId id, Quantity new_quantity) {
+    auto it = index_.find(id);
+    if (it == index_.end()) {
+        return false;
+    }
+    it->second.pos->quantity = new_quantity;
+    return true;
+}
+
 std::optional<Price> OrderBook::best_bid() const {
     if (bids_.empty()) {
         return std::nullopt;

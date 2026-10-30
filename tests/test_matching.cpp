@@ -195,7 +195,7 @@ TEST(Walking, MarketOrderConsumesSeveralLevelsBestFirst) {
 
     // Two levels gone, the third partially consumed.
     EXPECT_EQ(e.book().asks().size(), 1u);
-    EXPECT_EQ(level(e, Side::Sell, 103).front().quantity, 5u);
+    EXPECT_EQ(front_quantity(e, Side::Sell, 103), 5u);
     EXPECT_FALSE(e.book().contains(1));
     EXPECT_FALSE(e.book().contains(2));
     EXPECT_TRUE(e.book().contains(3));

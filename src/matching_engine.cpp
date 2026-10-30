@@ -48,6 +48,23 @@ void MatchingEngine::match_against(Order& incoming, Levels& levels,
     }
 }
 
+template <typename Levels>
+bool MatchingEngine::fully_fillable(const Order& incoming, const Levels& levels) const {
+    Quantity needed = incoming.quantity;
+    for (const auto& [price, queue] : levels) {
+        if (!crosses(incoming, price)) {
+            return false;  // levels only get worse from here
+        }
+        for (const Order& resting : queue) {
+            if (resting.quantity >= needed) {
+                return true;
+            }
+            needed -= resting.quantity;
+        }
+    }
+    return false;
+}
+
 bool MatchingEngine::submit(Order order, std::vector<Trade>& out) {
     // Reject before matching: a rejected order must neither trade nor rest.
     if (order.quantity == 0) {
@@ -57,18 +74,52 @@ bool MatchingEngine::submit(Order order, std::vector<Trade>& out) {
         return false;
     }
 
+    // Fill-or-kill is all or nothing, so decide before touching the book.
+    // A killed order is not an error: it was processed according to its terms.
+    if (order.tif == TimeInForce::FillOrKill) {
+        const bool fillable = (order.side == Side::Buy)
+                                  ? fully_fillable(order, book_.asks())
+                                  : fully_fillable(order, book_.bids());
+        if (!fillable) {
+            return true;
+        }
+    }
+
     if (order.side == Side::Buy) {
         match_against(order, book_.asks(), out);
     } else {
         match_against(order, book_.bids(), out);
     }
 
-    // Unfilled limit remainder rests in the book; market remainder is dropped.
-    if (order.quantity > 0 && order.type == OrderType::Limit) {
+    // Only a good-til-cancel limit order rests. Market, immediate-or-cancel and
+    // (already fully filled) fill-or-kill remainders are dropped.
+    if (order.quantity > 0 && order.type == OrderType::Limit &&
+        order.tif == TimeInForce::GoodTilCancel) {
         book_.add(order);
     }
 
     return true;
+}
+
+bool MatchingEngine::modify(OrderId id, Price new_price, Quantity new_quantity,
+                            std::vector<Trade>& out) {
+    const Order* current = book_.find(id);
+    if (current == nullptr || new_quantity == 0) {
+        return false;
+    }
+
+    // Same price, not larger: change in place and keep time priority.
+    if (new_price == current->price && new_quantity <= current->quantity) {
+        return book_.reduce_quantity(id, new_quantity);
+    }
+
+    // Otherwise the order forfeits its place: copy it, withdraw it, and send it
+    // back through submit() so it can trade if the new price now crosses.
+    Order replacement = *current;
+    replacement.price = new_price;
+    replacement.quantity = new_quantity;
+    book_.cancel(id);
+    return submit(replacement, out);
 }
 
 std::vector<Trade> MatchingEngine::submit(Order order) {

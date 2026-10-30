@@ -9,7 +9,8 @@
 //
 // The flow is built to hit the awkward paths: a narrow price band so limit
 // orders cross constantly, a small id range so duplicate and reused ids are
-// common, and a few zero-quantity orders.
+// common, a few zero-quantity orders, and a mix of good-til-cancel,
+// immediate-or-cancel and fill-or-kill orders plus cancel/replace.
 
 #include <gtest/gtest.h>
 
@@ -38,6 +39,12 @@ public:
         if (o.quantity == 0) return false;
         if (live(o.id)) return false;
 
+        // Fill-or-kill: add up everything the order could trade with (no early
+        // exit -- deliberately unlike the engine) and do nothing if it falls short.
+        if (o.tif == TimeInForce::FillOrKill && eligible_quantity(o) < o.quantity) {
+            return true;
+        }
+
         while (o.quantity > 0) {
             ModelOrder* best = best_opposite(o);
             if (best == nullptr) break;
@@ -49,10 +56,33 @@ public:
                 resting_.erase(resting_.begin() + (best - resting_.data()));
             }
         }
-        if (o.quantity > 0 && o.type == OrderType::Limit) {
+        if (o.quantity > 0 && o.type == OrderType::Limit &&
+            o.tif == TimeInForce::GoodTilCancel) {
             resting_.push_back({o.id, o.side, o.price, o.quantity, next_seq_++});
         }
         return true;
+    }
+
+    // Cancel/replace. Same price and no larger: edit in place (keeps its
+    // arrival sequence). Anything else: withdraw and re-enter as a new order.
+    bool modify(OrderId id, Price price, Quantity qty, std::vector<Trade>& out) {
+        auto it = std::find_if(resting_.begin(), resting_.end(),
+                               [&](const ModelOrder& r) { return r.id == id; });
+        if (it == resting_.end() || qty == 0) return false;
+        if (price == it->price && qty <= it->qty) {
+            it->qty = qty;
+            return true;
+        }
+        const Side side = it->side;
+        resting_.erase(it);
+        Order replacement;
+        replacement.id = id;
+        replacement.side = side;
+        replacement.type = OrderType::Limit;
+        replacement.tif = TimeInForce::GoodTilCancel;
+        replacement.price = price;
+        replacement.quantity = qty;
+        return submit(replacement, out);
     }
 
     bool cancel(OrderId id) {
@@ -86,6 +116,20 @@ public:
     }
 
 private:
+    Quantity eligible_quantity(const Order& o) const {
+        Quantity total = 0;
+        for (const auto& r : resting_) {
+            if (r.side == o.side) continue;
+            if (o.type == OrderType::Limit) {
+                const bool ok = (o.side == Side::Buy) ? (o.price >= r.price)
+                                                      : (o.price <= r.price);
+                if (!ok) continue;
+            }
+            total += r.qty;
+        }
+        return total;
+    }
+
     // Best resting order on the opposite side that `o` is willing to trade
     // with: best price first, earliest arrival within a price.
     ModelOrder* best_opposite(const Order& o) {
@@ -157,15 +201,29 @@ int run_session(std::uint64_t seed, int steps, const char** why) {
 
     for (int step = 0; step < steps; ++step) {
         const int r = pct(rng);
-        if (r < 25) {
+        if (r < 20) {
             const OrderId id = static_cast<OrderId>(id_d(rng));
             if (engine.cancel(id) != model.cancel(id)) { *why = "cancel result differs"; return step; }
+        } else if (r < 30) {
+            const OrderId id = static_cast<OrderId>(id_d(rng));
+            const Price price = price_d(rng);
+            const Quantity qty = static_cast<Quantity>(pct(rng) < 8 ? 0 : qty_d(rng));
+            got.clear();
+            want.clear();
+            const bool a = engine.modify(id, price, qty, got);
+            const bool b = model.modify(id, price, qty, want);
+            if (a != b) { *why = "modify accept/reject differs"; return step; }
+            if (!same_trades(got, want)) { *why = "modify trades differ"; return step; }
         } else {
             Order o;
             o.id = static_cast<OrderId>(id_d(rng));
             o.side = (pct(rng) < 50) ? Side::Buy : Side::Sell;
-            o.quantity = (r >= 97) ? 0 : static_cast<Quantity>(qty_d(rng));
-            if (r >= 80 && r < 90) {
+            o.quantity = (pct(rng) < 3) ? 0 : static_cast<Quantity>(qty_d(rng));
+            const int tif_roll = pct(rng);
+            o.tif = tif_roll < 65   ? TimeInForce::GoodTilCancel
+                    : tif_roll < 85 ? TimeInForce::ImmediateOrCancel
+                                    : TimeInForce::FillOrKill;
+            if (pct(rng) < 12) {
                 o.type = OrderType::Market;
             } else {
                 o.type = OrderType::Limit;
